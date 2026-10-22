@@ -1,126 +1,174 @@
-    limit: Optional[int] = None,
-) -> JSONResponse:
-    try:
-        data = get_incident_investigations(
-            severity=severity,
-            status_filter=status,
-            limit=limit,
-        )
-        return JSONResponse(status_code=200, content=data)
-    except Exception:
-        logger.exception("Using demo incident records because Exasol retrieval failed")
-        items = DEMO_INCIDENTS[:]
-        if severity:
-            items = [x for x in items if x["severity"].upper() == severity.upper()]
-        if status:
-            items = [x for x in items if x["status"].upper() == status.upper()]
-        if limit is not None and limit > 0:
-            items = items[:limit]
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "data_mode": "demo",
-                "total": len(items),
-                "incidents": items,
-                "message": "DEMO DATA: These incidents are illustrative, not live database records.",
-            },
-        )
-
-
-@app.get("/api/investigations", tags=["Investigations"])
-def list_investigations(
-    case_id: Optional[str] = None,
-    severity: Optional[str] = None,
-    status: Optional[str] = None,
-    limit: Optional[int] = None,
-) -> JSONResponse:
-    try:
-        data = get_investigation_cases(
-            case_id=case_id,
-            severity=severity,
-            status=status,
-            limit=limit,
-        )
-        return JSONResponse(status_code=200, content=data)
-    except Exception:
-        logger.exception("Using demo investigation cases because Exasol retrieval failed")
-        return JSONResponse(
-            status_code=200,
-            content=filtered_demo_investigations(
-                case_id=case_id,
-                severity=severity,
-                status=status,
-                limit=limit,
-            ),
-        )
-
-
-@app.get("/api/lineage", tags=["Lineage"])
-def get_lineage() -> JSONResponse:
-    try:
-        data = get_lineage_data()
-        return JSONResponse(status_code=200, content=data)
-    except Exception:
-        logger.exception("Using demo lineage because Exasol retrieval failed")
-        return JSONResponse(status_code=200, content=DEMO_LINEAGE)
-
-
-@app.get("/api/quality-checks", tags=["Quality Checks"])
-def list_quality_checks(
-    status: Optional[str] = None,
-    severity: Optional[str] = None,
-    dataset: Optional[str] = None,
-    search: Optional[str] = None,
-    limit: Optional[int] = None,
-) -> JSONResponse:
-    try:
-        data = get_quality_checks(
-            status=status,
-            severity=severity,
-            dataset=dataset,
-            search=search,
-            limit=limit,
-        )
-        return JSONResponse(status_code=200, content=data)
-    except Exception:
-        logger.exception("Using demo quality checks because Exasol retrieval failed")
-        items = DEMO_QUALITY_CHECKS[:]
-
-        if status:
-            items = [
-                x for x in items
-                if status.upper() in (
-                    x["status"].upper(), x["check_status"].upper()
-                )
-            ]
-        if severity:
-            items = [x for x in items if x["severity"].upper() == severity.upper()]
-        if dataset:
-            items = [
-                x for x in items
-                if dataset.lower() in x["dataset_name"].lower()
-            ]
-        if search:
-            items = [
-                x for x in items
-                if search.lower() in str(x).lower()
-            ]
-        if limit is not None and limit > 0:
-            items = items[:limit]
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "data_mode": "demo",
-                "total": len(items),
-                "quality_checks": items,
-                "message": "DEMO DATA: These checks are illustrative, not live database results.",
-            },
-        )
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    {
+        "case_id": "CASE-RAW_CUSTOMER_PROFILES",
+        "title": "Customer Profile Data Freshness Breach",
+        "flow_name": "Customer Profile Processing Flow",
+        "root_dataset": "raw_customer_profiles",
+        "severity": "HIGH",
+        "status": "ACTIVE_INVESTIGATION",
+        "first_observed_at": "2026-10-22T10:00:00+00:00",
+        "last_observed_at": "2026-10-22T10:15:00+00:00",
+        "silent_data_corruption": False,
+        "affected_datasets": [
+            "raw_customer_profiles",
+            "stg_customer_profiles",
+            "mart_customer_360"
+        ],
+        "downstream_reports": ["Customer 360 Dashboard"],
+        "associated_kpis": [{
+            "kpi_name": "Profile Data Freshness",
+            "expected_value": 100,
+            "actual_value": 68,
+            "deviation_percent": -32,
+            "business_impact": "Customer profiles may be outdated."
+        }],
+        "confirmed_evidence": [{
+            "evidence_id": "DEMO-EV-004",
+            "evidence_type": "DATA_QUALITY_ASSERTION",
+            "component": "raw_customer_profiles",
+            "check_status": "FAILED",
+            "severity": "HIGH",
+            "observed_at": "2026-10-22T10:15:00+00:00",
+            "details": "DEMO: Customer profile freshness threshold was missed."
+        }],
+        "inferred_hypotheses": [{
+            "hypothesis_id": "DEMO-HYP-003",
+            "candidate_root_cause": "pipe_customer_profiles",
+            "dataset_name": "raw_customer_profiles",
+            "pipeline_name": "pipe_customer_profiles",
+            "confidence_score": 0.79,
+            "confidence_level": "MEDIUM",
+            "is_confirmed": False,
+            "rank": 1,
+            "reasoning": "[DEMO HYPOTHESIS] A delayed upstream ingestion may explain stale profiles.",
+            "score_breakdown": {
+                "raw_score": 80,
+                "max_raw_score": 100,
+                "confidence_score": 0.79,
+                "max_confidence_limit": 0.95,
+                "scoring_details": ["DEMO: Freshness threshold missed"]
+            }
+        }],
+        "top_candidate_root_cause": "pipe_customer_profiles",
+        "top_confidence_score": 0.79,
+        "recommended_recovery_actions": [
+            "[Pipeline Audit] Check customer profile ingestion logs.",
+            "[Validation] Compare source and target update timestamps."
+        ],
+        "data_mode": "demo"
+    },
+    {
+        "case_id": "CASE-RAW_PAYMENT_EVENTS",
+        "title": "Payment Event Ingestion Failure",
+        "flow_name": "Payment Event Processing Flow",
+        "root_dataset": "raw_payment_events",
+        "severity": "CRITICAL",
+        "status": "ACTIVE_INVESTIGATION",
+        "first_observed_at": "2026-10-22T10:30:00+00:00",
+        "last_observed_at": "2026-10-22T10:40:00+00:00",
+        "silent_data_corruption": False,
+        "affected_datasets": [
+            "raw_payment_events",
+            "stg_payment_events",
+            "fct_payments"
+        ],
+        "downstream_reports": ["Payment Operations Dashboard"],
+        "associated_kpis": [{
+            "kpi_name": "Payment Event Volume",
+            "expected_value": 10000,
+            "actual_value": 6100,
+            "deviation_percent": -39,
+            "business_impact": "Payment reporting may be incomplete."
+        }],
+        "confirmed_evidence": [{
+            "evidence_id": "DEMO-EV-005",
+            "evidence_type": "PIPELINE_EXECUTION",
+            "component": "pipe_raw_payment_events",
+            "status": "FAILED",
+            "severity": "CRITICAL",
+            "observed_at": "2026-10-22T10:40:00+00:00",
+            "details": "DEMO: Simulated payment event ingestion failure."
+        }],
+        "inferred_hypotheses": [{
+            "hypothesis_id": "DEMO-HYP-004",
+            "candidate_root_cause": "pipe_raw_payment_events",
+            "dataset_name": "raw_payment_events",
+            "pipeline_name": "pipe_raw_payment_events",
+            "confidence_score": 0.86,
+            "confidence_level": "HIGH",
+            "is_confirmed": False,
+            "rank": 1,
+            "reasoning": "[DEMO HYPOTHESIS] An ingestion failure may explain the reduced payment event volume.",
+            "score_breakdown": {
+                "raw_score": 88,
+                "max_raw_score": 100,
+                "confidence_score": 0.86,
+                "max_confidence_limit": 0.95,
+                "scoring_details": ["DEMO: Simulated pipeline failure"]
+            }
+        }],
+        "top_candidate_root_cause": "pipe_raw_payment_events",
+        "top_confidence_score": 0.86,
+        "recommended_recovery_actions": [
+            "[Pipeline Audit] Inspect payment ingestion execution logs.",
+            "[Reconciliation] Compare source event counts with target records."
+        ],
+        "data_mode": "demo"
+    },
+    {
+        "case_id": "CASE-RAW_MARKETING_EVENTS",
+        "title": "Duplicate Marketing Events Detected",
+        "flow_name": "Marketing Event Processing Flow",
+        "root_dataset": "raw_marketing_events",
+        "severity": "MEDIUM",
+        "status": "ACTIVE_INVESTIGATION",
+        "first_observed_at": "2026-10-22T11:00:00+00:00",
+        "last_observed_at": "2026-10-22T11:20:00+00:00",
+        "silent_data_corruption": True,
+        "affected_datasets": [
+            "raw_marketing_events",
+            "stg_marketing_events",
+            "mart_campaign_performance"
+        ],
+        "downstream_reports": ["Campaign Performance Dashboard"],
+        "associated_kpis": [{
+            "kpi_name": "Unique Marketing Events",
+            "expected_value": 50000,
+            "actual_value": 63500,
+            "deviation_percent": 27,
+            "business_impact": "Campaign engagement metrics may be overstated."
+        }],
+        "confirmed_evidence": [{
+            "evidence_id": "DEMO-EV-006",
+            "evidence_type": "DATA_QUALITY_ASSERTION",
+            "component": "stg_marketing_events",
+            "check_status": "FAILED",
+            "severity": "MEDIUM",
+            "observed_at": "2026-10-22T11:20:00+00:00",
+            "details": "DEMO: Duplicate event count exceeded the configured threshold."
+        }],
+        "inferred_hypotheses": [{
+            "hypothesis_id": "DEMO-HYP-005",
+            "candidate_root_cause": "pipe_marketing_events",
+            "dataset_name": "raw_marketing_events",
+            "pipeline_name": "pipe_marketing_events",
+            "confidence_score": 0.74,
+            "confidence_level": "MEDIUM",
+            "is_confirmed": False,
+            "rank": 1,
+            "reasoning": "[DEMO HYPOTHESIS] Duplicate ingestion may explain inflated campaign metrics.",
+            "score_breakdown": {
+                "raw_score": 75,
+                "max_raw_score": 100,
+                "confidence_score": 0.74,
+                "max_confidence_limit": 0.95,
+                "scoring_details": ["DEMO: Duplicate event threshold exceeded"]
+            }
+        }],
+        "top_candidate_root_cause": "pipe_marketing_events",
+        "top_confidence_score": 0.74,
+        "recommended_recovery_actions": [
+            "[Deduplication Audit] Inspect event identifiers and ingestion retries.",
+            "[Validation] Compare unique source events with transformed records."
+        ],
+        "data_mode": "demo"
+    },
