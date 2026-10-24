@@ -32,13 +32,14 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-default_origins = [
+ddefault_origins = [
     "http://localhost:5173",
     "http://localhost:5174",
     "http://localhost:5175",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "http://127.0.0.1:5175",
+    "https://trace-ops.vercel.app",
 ]
 
 raw_origins = os.environ.get(
