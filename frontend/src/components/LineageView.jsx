@@ -42,15 +42,107 @@ export default function LineageView({
     setLoading(true);
     setError(null);
     try {
-      const data = await getLineage();
+      const raw = await getLineage();
+
+      // Normalize edges and compute degree/dependency maps
+      const edges = (raw.edges || []).map((e) => ({
+        source: e.source,
+        target: e.target,
+        dependency_type: e.dependency_type || 'DATA_FLOW',
+        is_critical: Boolean(e.is_critical),
+      }));
+
+      const inDegreeMap = {};
+      const outDegreeMap = {};
+      const upstreamMap = {};
+      const downstreamMap = {};
+      edges.forEach((e) => {
+        outDegreeMap[e.source] = (outDegreeMap[e.source] || 0) + 1;
+        inDegreeMap[e.target] = (inDegreeMap[e.target] || 0) + 1;
+        if (!upstreamMap[e.target]) upstreamMap[e.target] = [];
+        upstreamMap[e.target].push(e.source);
+        if (!downstreamMap[e.source]) downstreamMap[e.source] = [];
+        downstreamMap[e.source].push(e.target);
+      });
+
+      const stageNameMap = {
+        1: 'Stage 01: Raw Ingestion',
+        2: 'Stage 02: Staging & Cleanse',
+        3: 'Stage 03: Dimension / Core',
+        4: 'Stage 04: Facts & Aggregation',
+        5: 'Stage 05: Analytics & KPIs',
+      };
+
+      const normalizedNodes = (raw.nodes || []).map((n) => {
+        const id = n.id;
+        const name = n.name || n.label || id;
+        const inDeg = n.in_degree ?? (inDegreeMap[id] || 0);
+        const outDeg = n.out_degree ?? (outDegreeMap[id] || 0);
+        const rawType = (n.type || n.node_type || '').toLowerCase();
+
+        // Map node_type from 'type', 'node_type', or graph topology
+        let nodeType = n.node_type;
+        if (!nodeType) {
+          if (rawType === 'source' || id.startsWith('raw_') || inDeg === 0) {
+            nodeType = 'SOURCE_DATASET';
+          } else if (rawType === 'mart' || rawType === 'report' || id.startsWith('rpt_') || id.startsWith('mart_') || outDeg === 0) {
+            nodeType = 'DOWNSTREAM_DATASET';
+          } else {
+            nodeType = 'TRANSFORMATION';
+          }
+        }
+
+        // Assign stage index (1 to 5)
+        let stageIdx = n.stage_idx;
+        if (stageIdx == null || isNaN(stageIdx) || stageIdx < 1 || stageIdx > 5) {
+          if (nodeType === 'SOURCE_DATASET') stageIdx = 1;
+          else if (nodeType === 'DOWNSTREAM_DATASET') stageIdx = 5;
+          else if (id.startsWith('stg_')) stageIdx = 2;
+          else if (id.startsWith('dim_')) stageIdx = 3;
+          else if (id.startsWith('fct_')) stageIdx = 4;
+          else stageIdx = 3;
+        }
+
+        // Ensure stage_name is valid and never 'Stage undefined'
+        let stageName = n.stage_name;
+        if (!stageName || stageName.includes('undefined')) {
+          stageName = stageNameMap[stageIdx] || `Stage ${String(stageIdx).padStart(2, '0')}`;
+        }
+
+        return {
+          ...n,
+          id,
+          name,
+          label: n.label || name,
+          node_type: nodeType,
+          stage_idx: stageIdx,
+          stage_name: stageName,
+          in_degree: inDeg,
+          out_degree: outDeg,
+          upstream_dependencies: n.upstream_dependencies || upstreamMap[id] || [],
+          downstream_dependents: n.downstream_dependents || downstreamMap[id] || [],
+          direct_health: n.direct_health || 'HEALTHY',
+          downstream_impact: n.downstream_impact || 'NONE',
+          is_silent_corruption: Boolean(n.is_silent_corruption),
+          is_unmapped: Boolean(n.is_unmapped),
+          associated_pipelines: n.associated_pipelines || (n.pipeline_name ? [n.pipeline_name] : []),
+          quality_checks: n.quality_checks || [],
+          kpis: n.kpis || [],
+          related_cases: n.related_cases || [],
+          direct_issues: n.direct_issues || [],
+        };
+      });
+
+      const data = { ...raw, nodes: normalizedNodes, edges };
       setLineageData(data);
+
       if (data.nodes && data.nodes.length > 0 && !selectedNodeId) {
         const firstSource = data.nodes.find((n) => n.node_type === 'SOURCE_DATASET');
         setSelectedNodeId(firstSource ? firstSource.id : data.nodes[0].id);
       }
     } catch (err) {
       console.error('Failed to fetch lineage data:', err);
-      setError(err.message || 'Failed to connect to Exasol Lineage Engine');
+      setError(err.message || 'Failed to connect to Lineage Engine');
     } finally {
       setLoading(false);
     }
@@ -181,9 +273,9 @@ export default function LineageView({
     return (
       <div className="state-container">
         <div className="spinner"></div>
-        <div className="state-title">Querying Exasol Lineage DAG...</div>
+        <div className="state-title">Querying Lineage DAG...</div>
         <p className="state-subtitle">
-          Constructing topological dependency graph directly from TRACEOPS.DATASET_DEPENDENCIES records.
+          Constructing topological dependency graph from lineage records.
         </p>
       </div>
     );
@@ -203,18 +295,60 @@ export default function LineageView({
     );
   }
 
-  const summary = lineageData?.summary || {};
+  const nodes = lineageData?.nodes || [];
+  const edges = lineageData?.edges || [];
+  const isDemoMode = lineageData?.data_mode === 'demo';
+
+  const sourceCount = nodes.filter((n) => n.node_type === 'SOURCE_DATASET').length;
+  const transformCount = nodes.filter((n) => n.node_type === 'TRANSFORMATION').length;
+  const downstreamCount = nodes.filter((n) => n.node_type === 'DOWNSTREAM_DATASET').length;
+  const edgeCount = edges.length;
+
+  const rawSummary = lineageData?.summary || {};
+  const summary = {
+    source_datasets: (rawSummary.source_datasets && rawSummary.source_datasets > 0) ? rawSummary.source_datasets : sourceCount,
+    transformations: (rawSummary.transformations && rawSummary.transformations > 0) ? rawSummary.transformations : transformCount,
+    downstream_datasets: (rawSummary.downstream_datasets && rawSummary.downstream_datasets > 0) ? rawSummary.downstream_datasets : downstreamCount,
+    total_dependencies: (rawSummary.total_dependencies && rawSummary.total_dependencies > 0) ? rawSummary.total_dependencies : edgeCount,
+  };
 
   return (
     <div className="lineage-page-container">
       {/* 1. Header & Summary Stats */}
       <div className="lineage-header-bar">
         <div>
-          <h2 className="page-headline">Data Lineage Directed Acyclic Graph</h2>
+          <div className="headline-with-badge">
+            <h2 className="page-headline">Data Lineage Directed Acyclic Graph</h2>
+            {isDemoMode && (
+              <span className="demo-data-badge" id="lineage-demo-badge">
+                DEMO DATA
+              </span>
+            )}
+          </div>
           <p className="page-description">
-            Complete data-flow topology synthesized from <code>TRACEOPS.DATASET_DEPENDENCIES</code> in Exasol.
-            Traces end-to-end lineage from ingestion roots through transformations to executive KPI reports.
+            {isDemoMode ? (
+              <span>
+                Demonstration data lineage topology. These dependencies are illustrative, not live database results.
+              </span>
+            ) : (
+              <span>
+                Complete data-flow topology synthesized from <code>TRACEOPS.DATASET_DEPENDENCIES</code> in Exasol.
+                Traces end-to-end lineage from ingestion roots through transformations to executive KPI reports.
+              </span>
+            )}
           </p>
+
+          {isDemoMode && (
+            <div className="demo-data-banner">
+              <AlertTriangle size={14} className="demo-banner-icon" />
+              <div className="demo-banner-content">
+                <span className="demo-banner-title">DEMO DATA MODE:</span>
+                <span className="demo-banner-text">
+                  Lineage nodes and dependency edges are demonstration data models, not live database results.
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="lineage-metrics-chips">
@@ -223,7 +357,7 @@ export default function LineageView({
               <Database size={15} strokeWidth={2} />
             </span>
             <div>
-              <span className="stat-chip-num">{summary.source_datasets ?? 6}</span>
+              <span className="stat-chip-num">{summary.source_datasets}</span>
               <span className="stat-chip-lbl">Sources</span>
             </div>
           </div>
@@ -233,7 +367,7 @@ export default function LineageView({
               <Workflow size={15} strokeWidth={2} />
             </span>
             <div>
-              <span className="stat-chip-num">{summary.transformations ?? 11}</span>
+              <span className="stat-chip-num">{summary.transformations}</span>
               <span className="stat-chip-lbl">Transforms</span>
             </div>
           </div>
@@ -243,7 +377,7 @@ export default function LineageView({
               <TrendingUp size={15} strokeWidth={2} />
             </span>
             <div>
-              <span className="stat-chip-num">{summary.downstream_datasets ?? 4}</span>
+              <span className="stat-chip-num">{summary.downstream_datasets}</span>
               <span className="stat-chip-lbl">Reports</span>
             </div>
           </div>
@@ -253,8 +387,8 @@ export default function LineageView({
               <GitFork size={15} strokeWidth={2} />
             </span>
             <div>
-              <span className="stat-chip-num">{summary.total_dependencies ?? 20}</span>
-              <span className="stat-chip-lbl">Exasol Edges</span>
+              <span className="stat-chip-num">{summary.total_dependencies}</span>
+              <span className="stat-chip-lbl">{isDemoMode ? 'Demo Edges' : 'Lineage Edges'}</span>
             </div>
           </div>
         </div>
@@ -270,7 +404,7 @@ export default function LineageView({
               className={`scenario-pill ${selectedScenario === 'ALL' ? 'active' : ''}`}
               onClick={() => setSelectedScenario('ALL')}
             >
-              All Scenarios (Full Exasol Graph: 21 nodes)
+              All Scenarios ({nodes.length ? `Full Graph: ${nodes.length} nodes` : isDemoMode ? 'Demo Graph' : 'Full Lineage Graph'})
             </button>
             {lineageData?.scenarios?.map((sc) => (
               <button
@@ -549,10 +683,19 @@ export default function LineageView({
           {activeNode ? (
             <div className="inspector-content-scroll">
               <div className="inspector-header">
-                <span className="inspector-tag-type">{activeNode.node_type}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="inspector-tag-type">{activeNode.node_type}</span>
+                  {isDemoMode && (
+                    <span className="demo-tag-sm">DEMO NODE</span>
+                  )}
+                </div>
                 <h3 className="inspector-node-title mono-font">{activeNode.name}</h3>
                 <div className="inspector-layer-meta">
-                  <span>{activeNode.stage_name ?? `Stage ${activeNode.stage_idx}`}</span>
+                  <span>
+                    {activeNode.stage_name && !activeNode.stage_name.includes('undefined')
+                      ? activeNode.stage_name
+                      : (activeNode.stage_idx ? `Stage ${String(activeNode.stage_idx).padStart(2, '0')}` : 'Stage 01')}
+                  </span>
                   <span>•</span>
                   <span>In: {activeNode.in_degree} | Out: {activeNode.out_degree}</span>
                 </div>
@@ -608,7 +751,11 @@ export default function LineageView({
                 {activeNode.is_unmapped && (
                   <div className="unmapped-node-alert">
                     <AlertTriangle size={14} strokeWidth={2} style={{ display: 'inline', marginRight: '4px' }} />
-                    This dataset has no resolved dependency lineage in <code>TRACEOPS.DATASET_DEPENDENCIES</code>. It is disconnected from the canonical DAG.
+                    {isDemoMode ? (
+                      <span>This dataset has no resolved dependency lineage in the demo model. It is disconnected from the canonical DAG.</span>
+                    ) : (
+                      <span>This dataset has no resolved dependency lineage in <code>TRACEOPS.DATASET_DEPENDENCIES</code>. It is disconnected from the canonical DAG.</span>
+                    )}
                   </div>
                 )}
               </div>

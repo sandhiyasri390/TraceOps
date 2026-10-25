@@ -17,9 +17,21 @@ Architectural Principles:
 
 from collections import defaultdict
 import logging
+from pathlib import Path
+import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from database import exasol_session, get_connection_config
+_backend_dir = str(Path(__file__).resolve().parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+elif sys.path[0] != _backend_dir:
+    sys.path.remove(_backend_dir)
+    sys.path.insert(0, _backend_dir)
+
+try:
+    from database import exasol_session, get_connection_config
+except (ImportError, ModuleNotFoundError):
+    from backend.database import exasol_session, get_connection_config
 
 logger = logging.getLogger("traceops.ranking")
 

@@ -17,6 +17,30 @@ import {
 import { getQualityChecks } from '../services/api';
 
 /**
+ * Format timestamp into a clean, readable representation.
+ * Converts ISO timestamps like "2026-10-22T08:15:00+00:00" to "2026-10-22 08:15:00 UTC".
+ */
+function formatTimestamp(isoStr) {
+  if (!isoStr) return '—';
+  try {
+    const cleaned = String(isoStr).replace('.000000', '');
+    const d = new Date(cleaned);
+    if (!isNaN(d.getTime())) {
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      const hours = String(d.getUTCHours()).padStart(2, '0');
+      const mins = String(d.getUTCMinutes()).padStart(2, '0');
+      const secs = String(d.getUTCSeconds()).padStart(2, '0');
+      return `${year}-${month}-${day} ${hours}:${mins}:${secs} UTC`;
+    }
+    return cleaned.replace('T', ' ');
+  } catch {
+    return String(isoStr);
+  }
+}
+
+/**
  * QualityChecksView Component
  * Renders an enterprise-grade data quality assertions workbench.
  * Directly queries Exasol TRACEOPS.DATA_QUALITY_CHECKS to display empirical test results,
@@ -27,6 +51,8 @@ export default function QualityChecksView({ onNavigateToCase }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastRefreshed, setLastRefreshed] = useState(null);
+  const [baseSummary, setBaseSummary] = useState(null);
+  const [knownDatasets, setKnownDatasets] = useState([]);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -35,35 +61,93 @@ export default function QualityChecksView({ onNavigateToCase }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCheckId, setSelectedCheckId] = useState(null);
 
+  const isFiltered =
+    statusFilter !== 'ALL' ||
+    severityFilter !== 'ALL' ||
+    datasetFilter !== 'ALL' ||
+    searchQuery.trim().length > 0;
+
   const fetchChecks = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getQualityChecks({
+      const rawData = await getQualityChecks({
         status: statusFilter,
         severity: severityFilter,
         dataset: datasetFilter,
         search: searchQuery,
       });
-      setChecksData(data);
+
+      // Normalize response so component always has expected structure
+      const rawList = rawData.checks || rawData.quality_checks || [];
+      const dataMode = rawData.data_mode || 'live';
+      const normalizedChecks = rawList.map((c) => {
+        const s = c.check_status || c.status || 'UNKNOWN';
+        return {
+          ...c,
+          status: s,
+          check_status: s,
+          check_type: c.check_type || 'GENERAL',
+          data_mode: c.data_mode || dataMode,
+        };
+      });
+
+      const calculatedSummary = {
+        total_checks: rawData.total ?? normalizedChecks.length,
+        passed_checks: normalizedChecks.filter((c) => (c.check_status || c.status) === 'PASSED').length,
+        failed_checks: normalizedChecks.filter((c) => (c.check_status || c.status) === 'FAILED').length,
+        warning_checks: normalizedChecks.filter((c) => (c.check_status || c.status) === 'WARNING').length,
+        critical_checks: normalizedChecks.filter((c) => c.severity === 'CRITICAL').length,
+        high_checks: normalizedChecks.filter((c) => c.severity === 'HIGH').length,
+        medium_checks: normalizedChecks.filter((c) => c.severity === 'MEDIUM').length,
+        low_checks: normalizedChecks.filter((c) => c.severity === 'LOW').length,
+      };
+
+      const normalizedData = {
+        ...rawData,
+        data_mode: dataMode,
+        checks: normalizedChecks,
+        global_summary: rawData.global_summary || calculatedSummary,
+      };
+
+      setChecksData(normalizedData);
       setLastRefreshed(new Date().toLocaleTimeString());
-      if (data.checks && data.checks.length > 0 && !selectedCheckId) {
-        setSelectedCheckId(data.checks[0].check_id);
+
+      // If unfiltered, update baseline summary
+      if (!isFiltered) {
+        setBaseSummary(normalizedData.global_summary);
+      }
+
+      // Collect known datasets so dropdown doesn't lose options
+      if (normalizedChecks.length > 0) {
+        setKnownDatasets((prev) => {
+          const next = new Set(prev);
+          normalizedChecks.forEach((c) => {
+            if (c.dataset_name) next.add(c.dataset_name);
+          });
+          return Array.from(next).sort();
+        });
+      }
+
+      if (normalizedChecks.length > 0 && (!selectedCheckId || !normalizedChecks.some((c) => c.check_id === selectedCheckId))) {
+        setSelectedCheckId(normalizedChecks[0].check_id);
       }
     } catch (err) {
       console.error('Failed to load quality checks:', err);
-      setError(err.message || 'Failed to connect to Exasol Quality Engine');
+      setError(err.message || 'Failed to connect to Quality Engine');
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, severityFilter, datasetFilter, searchQuery, selectedCheckId]);
+  }, [statusFilter, severityFilter, datasetFilter, searchQuery, selectedCheckId, isFiltered]);
 
   useEffect(() => {
     fetchChecks();
   }, [fetchChecks]);
 
   const checks = checksData?.checks || [];
-  const globalSummary = checksData?.global_summary || {
+  const isDemoMode = checksData?.data_mode === 'demo';
+
+  const defaultSummary = {
     total_checks: 0,
     passed_checks: 0,
     failed_checks: 0,
@@ -74,23 +158,21 @@ export default function QualityChecksView({ onNavigateToCase }) {
     low_checks: 0,
   };
 
-  // Derive unique dataset list from global checks if available
+  // Preserve global summary from baseline or calculated
+  const globalSummary = checksData?.global_summary || baseSummary || defaultSummary;
+
+  // Derive unique dataset list from known datasets or current checks
   const availableDatasets = useMemo(() => {
-    if (!checksData?.checks) return [];
-    const dsSet = new Set(checksData.checks.map((c) => c.dataset_name));
+    if (knownDatasets.length > 0) return knownDatasets;
+    if (!checks.length) return [];
+    const dsSet = new Set(checks.map((c) => c.dataset_name));
     return Array.from(dsSet).sort();
-  }, [checksData]);
+  }, [knownDatasets, checks]);
 
   const activeCheck = useMemo(() => {
     if (!checks.length) return null;
     return checks.find((c) => c.check_id === selectedCheckId) || checks[0];
   }, [checks, selectedCheckId]);
-
-  const isFiltered =
-    statusFilter !== 'ALL' ||
-    severityFilter !== 'ALL' ||
-    datasetFilter !== 'ALL' ||
-    searchQuery.trim().length > 0;
 
   const resetFilters = () => {
     setStatusFilter('ALL');
@@ -104,11 +186,38 @@ export default function QualityChecksView({ onNavigateToCase }) {
       {/* 1. Header & Summary Stats */}
       <div className="page-header-row">
         <div>
-          <h2 className="page-headline">Data Quality Assertions</h2>
+          <div className="headline-with-badge">
+            <h2 className="page-headline">Data Quality Assertions</h2>
+            {isDemoMode && (
+              <span className="demo-data-badge" id="qc-demo-badge">
+                DEMO DATA
+              </span>
+            )}
+          </div>
           <p className="page-description">
-            Empirical test observations from <code>TRACEOPS.DATA_QUALITY_CHECKS</code> in Exasol.
-            Captures freshness latency, row volume deltas, schema drift, and numeric anomalies.
+            {isDemoMode ? (
+              <span>
+                Demonstration assertions and quality check models. These checks are illustrative, not live database results.
+              </span>
+            ) : (
+              <span>
+                Empirical test observations from <code>TRACEOPS.DATA_QUALITY_CHECKS</code> in Exasol.
+                Captures freshness latency, row volume deltas, schema drift, and numeric anomalies.
+              </span>
+            )}
           </p>
+
+          {isDemoMode && (
+            <div className="demo-data-banner">
+              <AlertTriangle size={14} className="demo-banner-icon" />
+              <div className="demo-banner-content">
+                <span className="demo-banner-title">DEMO DATA MODE:</span>
+                <span className="demo-banner-text">
+                  {checksData?.message || 'These checks are illustrative, not live database results.'}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="header-actions-group">
@@ -119,7 +228,7 @@ export default function QualityChecksView({ onNavigateToCase }) {
             className="btn-secondary"
             onClick={fetchChecks}
             disabled={loading}
-            title="Refresh assertion records from Exasol"
+            title={isDemoMode ? 'Refresh demo assertion records' : 'Refresh assertion records from Exasol'}
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             <span>{loading ? 'Refreshing...' : 'Refresh'}</span>
@@ -296,7 +405,7 @@ export default function QualityChecksView({ onNavigateToCase }) {
       {error && (
         <div className="state-container error">
           <AlertOctagon size={28} className="state-icon critical" />
-          <div className="state-title">Failed to Query Exasol Quality Checks</div>
+          <div className="state-title">Failed to Query Quality Checks</div>
           <p className="state-subtitle">{error}</p>
           <button className="btn-secondary" onClick={fetchChecks}>
             <RefreshCw size={14} />
@@ -310,7 +419,7 @@ export default function QualityChecksView({ onNavigateToCase }) {
           <div className="spinner"></div>
           <div className="state-title">Loading Quality Checks...</div>
           <p className="state-subtitle">
-            Fetching empirical assertions from <code>TRACEOPS.DATA_QUALITY_CHECKS</code>.
+            Fetching empirical assertions from quality check engine.
           </p>
         </div>
       )}
@@ -336,6 +445,15 @@ export default function QualityChecksView({ onNavigateToCase }) {
             ) : (
               <div className="table-responsive">
                 <table className="enterprise-table">
+                  <colgroup>
+                    <col style={{ width: '22%' }} />
+                    <col style={{ width: '18%' }} />
+                    <col style={{ width: '12%' }} />
+                    <col style={{ width: '11%' }} />
+                    <col style={{ width: '16%' }} />
+                    <col style={{ width: '16%' }} />
+                    <col style={{ width: '5%' }} />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th>Check Identifier</th>
@@ -350,9 +468,10 @@ export default function QualityChecksView({ onNavigateToCase }) {
                   <tbody>
                     {checks.map((chk) => {
                       const isSelected = activeCheck?.check_id === chk.check_id;
-                      const isFailed = chk.check_status === 'FAILED';
-                      const isWarning = chk.check_status === 'WARNING';
-                      const isPassed = chk.check_status === 'PASSED';
+                      const statusVal = chk.check_status || chk.status || 'UNKNOWN';
+                      const isFailed = statusVal === 'FAILED';
+                      const isWarning = statusVal === 'WARNING';
+                      const isPassed = statusVal === 'PASSED';
 
                       return (
                         <tr
@@ -362,13 +481,13 @@ export default function QualityChecksView({ onNavigateToCase }) {
                         >
                           <td>
                             <div className="check-id-cell">
-                              <span className="mono-font primary-text">{chk.check_type}</span>
+                              <span className="check-type-tag">{chk.check_type}</span>
                               <span className="mono-font sub-text">{chk.check_id}</span>
                             </div>
                           </td>
                           <td>
                             <div className="dataset-cell">
-                              <span className="mono-font">{chk.dataset_name}</span>
+                              <span className="mono-font dataset-name">{chk.dataset_name}</span>
                               {chk.run_id && (
                                 <span className="mono-font run-tag">{chk.run_id}</span>
                               )}
@@ -381,7 +500,7 @@ export default function QualityChecksView({ onNavigateToCase }) {
                               }`}
                             >
                               <span className="status-dot"></span>
-                              <span>{chk.check_status}</span>
+                              <span>{statusVal}</span>
                             </span>
                           </td>
                           <td>
@@ -418,8 +537,8 @@ export default function QualityChecksView({ onNavigateToCase }) {
                             </div>
                           </td>
                           <td>
-                            <span className="mono-font text-dim" style={{ fontSize: '11px' }}>
-                              {chk.observed_at ? chk.observed_at.replace('.000000', '') : '—'}
+                            <span className="mono-font timestamp-text">
+                              {formatTimestamp(chk.observed_at)}
                             </span>
                           </td>
                           <td>
@@ -451,17 +570,20 @@ export default function QualityChecksView({ onNavigateToCase }) {
                 <div className="detail-pane-header">
                   <div className="header-meta-row">
                     <span className="mono-font check-id-tag">{activeCheck.check_id}</span>
+                    {isDemoMode && (
+                      <span className="demo-tag-sm">DEMO RECORD</span>
+                    )}
                     <span
                       className={`status-pill ${
-                        activeCheck.check_status === 'FAILED'
+                        (activeCheck.check_status || activeCheck.status) === 'FAILED'
                           ? 'critical'
-                          : activeCheck.check_status === 'WARNING'
+                          : (activeCheck.check_status || activeCheck.status) === 'WARNING'
                           ? 'warning'
                           : 'healthy'
                       }`}
                     >
                       <span className="status-dot"></span>
-                      <span>{activeCheck.check_status}</span>
+                      <span>{activeCheck.check_status || activeCheck.status}</span>
                     </span>
                   </div>
 
@@ -492,9 +614,9 @@ export default function QualityChecksView({ onNavigateToCase }) {
                       <span className="comp-box-lbl">Observed Value</span>
                       <span
                         className={`mono-font comp-box-val ${
-                          activeCheck.check_status === 'FAILED'
+                          (activeCheck.check_status || activeCheck.status) === 'FAILED'
                             ? 'text-critical'
-                            : activeCheck.check_status === 'WARNING'
+                            : (activeCheck.check_status || activeCheck.status) === 'WARNING'
                             ? 'text-warning'
                             : 'text-healthy'
                         }`}
@@ -509,9 +631,15 @@ export default function QualityChecksView({ onNavigateToCase }) {
                 <div className="detail-section">
                   <div className="section-title-sm">Execution Telemetry</div>
                   <div className="telemetry-meta-list">
+                    {isDemoMode && (
+                      <div className="telemetry-row">
+                        <span className="t-lbl">Data Mode</span>
+                        <span className="mono-font t-val text-warning">Demonstration Model (Not Live)</span>
+                      </div>
+                    )}
                     <div className="telemetry-row">
                       <span className="t-lbl">Pipeline Run ID</span>
-                      <span className="mono-font t-val">{activeCheck.run_id || 'Asynchronous Assertion'}</span>
+                      <span className="mono-font t-val">{activeCheck.run_id || (isDemoMode ? 'Demo Pipeline' : 'Asynchronous Assertion')}</span>
                     </div>
                     <div className="telemetry-row">
                       <span className="t-lbl">Severity Level</span>
@@ -530,7 +658,7 @@ export default function QualityChecksView({ onNavigateToCase }) {
                     <div className="telemetry-row">
                       <span className="t-lbl">Observed Timestamp</span>
                       <span className="mono-font t-val">
-                        {activeCheck.observed_at ? activeCheck.observed_at.replace('.000000', '') : '—'}
+                        {formatTimestamp(activeCheck.observed_at)}
                       </span>
                     </div>
                   </div>

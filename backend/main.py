@@ -8,19 +8,39 @@ Demo fallback enabled when Exasol is unavailable.
 from datetime import datetime, timezone
 import logging
 import os
+from pathlib import Path
+import sys
 from typing import Any, Dict, Optional
+
+# Prioritize backend directory in sys.path to prevent module collisions
+# with the top-level 'database' schema directory when run from project root.
+_backend_dir = str(Path(__file__).resolve().parent)
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
+elif sys.path[0] != _backend_dir:
+    sys.path.remove(_backend_dir)
+    sys.path.insert(0, _backend_dir)
 
 from fastapi import FastAPI, status as http_status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from database import (
-    check_exasol_health,
-    get_incident_investigations,
-    get_quality_checks,
-)
-from ranking import get_investigation_cases
-from lineage import get_lineage_data
+try:
+    from database import (
+        check_exasol_health,
+        get_incident_investigations,
+        get_quality_checks,
+    )
+    from ranking import get_investigation_cases
+    from lineage import get_lineage_data
+except (ImportError, ModuleNotFoundError):
+    from backend.database import (
+        check_exasol_health,
+        get_incident_investigations,
+        get_quality_checks,
+    )
+    from backend.ranking import get_investigation_cases
+    from backend.lineage import get_lineage_data
 
 logger = logging.getLogger("traceops.api")
 
@@ -110,7 +130,7 @@ DEMO_INVESTIGATIONS = [{'case_id': 'CASE-RAW_ECOMMERCE_ORDERS',
                            'confidence_level': 'HIGH',
                            'is_confirmed': False,
                            'rank': 1,
-                           'reasoning': '[DEMO HYPOTHESIS] The upstream timeout may explain the '
+                           'reasoning': '[Inferred Hypothesis] The upstream timeout may explain the '
                                         'downstream row-count and revenue anomalies. Operator '
                                         'verification is required.',
                            'score_breakdown': {'raw_score': 92,
@@ -123,7 +143,35 @@ DEMO_INVESTIGATIONS = [{'case_id': 'CASE-RAW_ECOMMERCE_ORDERS',
                                                                    'DEMO: Simulated failure '
                                                                    'evidence',
                                                                    'DEMO: Downstream KPI '
-                                                                   'impact']}}],
+                                                                   'impact']}},
+                          {'hypothesis_id': 'DEMO-HYP-001b',
+                           'candidate_root_cause': 'pipe_stg_online_orders',
+                           'dataset_name': 'stg_ecommerce_orders',
+                           'pipeline_name': 'pipe_stg_online_orders',
+                           'confidence_score': 0.61,
+                           'confidence_level': 'MEDIUM',
+                           'is_confirmed': False,
+                           'rank': 2,
+                           'reasoning': '[Inferred Hypothesis] Downstream staging failure may be a secondary effect.',
+                           'score_breakdown': {'raw_score': 64,
+                                               'max_raw_score': 100,
+                                               'confidence_score': 0.61,
+                                               'max_confidence_limit': 0.95,
+                                               'scoring_details': ['DEMO: Downstream pipeline']}},
+                          {'hypothesis_id': 'DEMO-HYP-001c',
+                           'candidate_root_cause': 'pipe_fct_orders',
+                           'dataset_name': 'fct_daily_sales',
+                           'pipeline_name': 'pipe_fct_orders',
+                           'confidence_score': 0.45,
+                           'confidence_level': 'LOW',
+                           'is_confirmed': False,
+                           'rank': 3,
+                           'reasoning': '[Inferred Hypothesis] Fact table shows cascaded impact from upstream failures.',
+                           'score_breakdown': {'raw_score': 47,
+                                               'max_raw_score': 100,
+                                               'confidence_score': 0.45,
+                                               'max_confidence_limit': 0.95,
+                                               'scoring_details': ['DEMO: Fact table downstream']}}],
   'top_candidate_root_cause': 'pipe_raw_ecommerce_orders',
   'top_confidence_score': 0.88,
   'recommended_recovery_actions': ['[Read-Only Verification] Check upstream database availability '
@@ -157,16 +205,16 @@ DEMO_INVESTIGATIONS = [{'case_id': 'CASE-RAW_ECOMMERCE_ORDERS',
                           'observed_at': '2026-10-22T09:20:00+00:00',
                           'details': 'DEMO: A numeric distribution check exceeded its threshold.'}],
   'inferred_hypotheses': [{'hypothesis_id': 'DEMO-HYP-002',
-                           'candidate_root_cause': 'pipe_pos_currency_conversion',
+                           'candidate_root_cause': 'pipe_pos_transactions_etl',
                            'dataset_name': 'raw_pos_transactions',
-                           'pipeline_name': 'pipe_pos_currency_conversion',
+                           'pipeline_name': 'pipe_pos_transactions_etl',
                            'confidence_score': 0.72,
                            'confidence_level': 'MEDIUM',
                            'is_confirmed': False,
                            'rank': 1,
-                           'reasoning': '[DEMO HYPOTHESIS] A conversion or aggregation issue may '
-                                        'explain the KPI deviation. Validate against source '
-                                        'records.',
+                           'reasoning': '[Inferred Hypothesis] EUR/GBP currency multiplier bug in '
+                                        'POS ETL may explain the average order value inflation. '
+                                        'Operator verification required.',
                            'score_breakdown': {'raw_score': 76,
                                                'max_raw_score': 100,
                                                'confidence_score': 0.72,
@@ -176,152 +224,160 @@ DEMO_INVESTIGATIONS = [{'case_id': 'CASE-RAW_ECOMMERCE_ORDERS',
                                                                    'DEMO: Numeric anomaly observed',
                                                                    'DEMO: KPI deviation '
                                                                    'detected']}}],
-  'top_candidate_root_cause': 'pipe_pos_currency_conversion',
+  'top_candidate_root_cause': 'pipe_pos_transactions_etl',
   'top_confidence_score': 0.72,
   'recommended_recovery_actions': ['[Calculation Audit] Verify currency conversion and unit '
-                                   'multipliers.',
+                                   'multipliers (EUR/GBP multiplier suspected).',
                                    '[Reconciliation] Compare a sample of source transactions with '
                                    'transformed values.',
                                    '[Controlled Reprocessing] Recompute affected aggregates after '
                                    'validation.'],
   'data_mode': 'demo'},
- {'case_id': 'CASE-RAW_CUSTOMER_PROFILES',
-  'title': 'Customer Profile Data Freshness Breach',
-  'flow_name': 'Customer Profile Processing Flow',
-  'root_dataset': 'raw_customer_profiles',
-  'severity': 'HIGH',
-  'status': 'ACTIVE_INVESTIGATION',
-  'first_observed_at': '2026-10-22T10:00:00+00:00',
-  'last_observed_at': '2026-10-22T10:15:00+00:00',
-  'silent_data_corruption': False,
-  'affected_datasets': ['raw_customer_profiles', 'stg_customer_profiles', 'mart_customer_360'],
-  'downstream_reports': ['Customer 360 Dashboard'],
-  'associated_kpis': [{'kpi_name': 'Profile Data Freshness',
-                       'expected_value': 100,
-                       'actual_value': 68,
-                       'deviation_percent': -32,
-                       'business_impact': 'Customer profiles may be outdated.'}],
-  'confirmed_evidence': [{'evidence_id': 'DEMO-EV-004',
-                          'evidence_type': 'DATA_QUALITY_ASSERTION',
-                          'component': 'raw_customer_profiles',
-                          'check_status': 'FAILED',
-                          'severity': 'HIGH',
-                          'observed_at': '2026-10-22T10:15:00+00:00',
-                          'details': 'DEMO: Customer profile freshness threshold was missed.'}],
-  'inferred_hypotheses': [{'hypothesis_id': 'DEMO-HYP-003',
-                           'candidate_root_cause': 'pipe_customer_profiles',
-                           'dataset_name': 'raw_customer_profiles',
-                           'pipeline_name': 'pipe_customer_profiles',
-                           'confidence_score': 0.79,
-                           'confidence_level': 'MEDIUM',
-                           'is_confirmed': False,
-                           'rank': 1,
-                           'reasoning': '[DEMO HYPOTHESIS] A delayed upstream ingestion may '
-                                        'explain stale profiles.',
-                           'score_breakdown': {'raw_score': 80,
-                                               'max_raw_score': 100,
-                                               'confidence_score': 0.79,
-                                               'max_confidence_limit': 0.95,
-                                               'scoring_details': ['DEMO: Freshness threshold '
-                                                                   'missed']}}],
-  'top_candidate_root_cause': 'pipe_customer_profiles',
-  'top_confidence_score': 0.79,
-  'recommended_recovery_actions': ['[Pipeline Audit] Check customer profile ingestion logs.',
-                                   '[Validation] Compare source and target update timestamps.'],
-  'data_mode': 'demo'},
- {'case_id': 'CASE-RAW_MARKETING_EVENTS',
-  'title': 'Duplicate Marketing Events Detected',
-  'flow_name': 'Marketing Event Processing Flow',
-  'root_dataset': 'raw_marketing_events',
-  'severity': 'MEDIUM',
-  'status': 'ACTIVE_INVESTIGATION',
-  'first_observed_at': '2026-10-22T11:00:00+00:00',
-  'last_observed_at': '2026-10-22T11:20:00+00:00',
-  'silent_data_corruption': True,
-  'affected_datasets': ['raw_marketing_events',
-                        'stg_marketing_events',
-                        'mart_campaign_performance'],
-  'downstream_reports': ['Campaign Performance Dashboard'],
-  'associated_kpis': [{'kpi_name': 'Unique Marketing Events',
-                       'expected_value': 50000,
-                       'actual_value': 63500,
-                       'deviation_percent': 27,
-                       'business_impact': 'Campaign engagement metrics may be overstated.'}],
-  'confirmed_evidence': [{'evidence_id': 'DEMO-EV-006',
-                          'evidence_type': 'DATA_QUALITY_ASSERTION',
-                          'component': 'stg_marketing_events',
-                          'check_status': 'FAILED',
-                          'severity': 'MEDIUM',
-                          'observed_at': '2026-10-22T11:20:00+00:00',
-                          'details': 'DEMO: Duplicate event count exceeded the configured '
-                                     'threshold.'}],
-  'inferred_hypotheses': [{'hypothesis_id': 'DEMO-HYP-005',
-                           'candidate_root_cause': 'pipe_marketing_events',
-                           'dataset_name': 'raw_marketing_events',
-                           'pipeline_name': 'pipe_marketing_events',
-                           'confidence_score': 0.74,
-                           'confidence_level': 'MEDIUM',
-                           'is_confirmed': False,
-                           'rank': 1,
-                           'reasoning': '[DEMO HYPOTHESIS] Duplicate ingestion may explain '
-                                        'inflated campaign metrics.',
-                           'score_breakdown': {'raw_score': 75,
-                                               'max_raw_score': 100,
-                                               'confidence_score': 0.74,
-                                               'max_confidence_limit': 0.95,
-                                               'scoring_details': ['DEMO: Duplicate event '
-                                                                   'threshold exceeded']}}],
-  'top_candidate_root_cause': 'pipe_marketing_events',
-  'top_confidence_score': 0.74,
-  'recommended_recovery_actions': ['[Deduplication Audit] Inspect event identifiers and ingestion '
-                                   'retries.',
-                                   '[Validation] Compare unique source events with transformed '
-                                   'records.'],
-  'data_mode': 'demo'},
- {'case_id': 'CASE-RAW_PAYMENT_EVENTS',
-  'title': 'Payment Event Ingestion Failure',
-  'flow_name': 'Payment Event Processing Flow',
-  'root_dataset': 'raw_payment_events',
+ {'case_id': 'CASE-RAW_CRM_EXPORT',
+  'title': 'Unannounced Schema Drift in CRM Feed Causing Postal Code Null Spike',
+  'flow_name': 'CRM Customer Profile Enrichment Flow',
+  'root_dataset': 'raw_crm_export',
   'severity': 'CRITICAL',
   'status': 'ACTIVE_INVESTIGATION',
-  'first_observed_at': '2026-10-22T10:30:00+00:00',
-  'last_observed_at': '2026-10-22T10:40:00+00:00',
+  'first_observed_at': '2026-10-17T02:10:00+00:00',
+  'last_observed_at': '2026-10-17T02:25:00+00:00',
   'silent_data_corruption': False,
-  'affected_datasets': ['raw_payment_events', 'stg_payment_events', 'fct_payments'],
-  'downstream_reports': ['Payment Operations Dashboard'],
-  'associated_kpis': [{'kpi_name': 'Payment Event Volume',
-                       'expected_value': 10000,
-                       'actual_value': 6100,
-                       'deviation_percent': -39,
-                       'business_impact': 'Payment reporting may be incomplete.'}],
-  'confirmed_evidence': [{'evidence_id': 'DEMO-EV-005',
-                          'evidence_type': 'PIPELINE_EXECUTION',
-                          'component': 'pipe_raw_payment_events',
-                          'status': 'FAILED',
+  'affected_datasets': ['raw_crm_export', 'stg_crm_customers', 'dim_customers'],
+  'downstream_reports': ['Customer Segmentation Report', 'Regional Revenue Dashboard'],
+  'associated_kpis': [{'kpi_name': 'Postal Code Fill Rate',
+                       'expected_value': 99.5,
+                       'actual_value': 71.2,
+                       'deviation_percent': -28.4,
+                       'business_impact': 'Regional revenue attribution may be incorrect.'}],
+  'confirmed_evidence': [{'evidence_id': 'DEMO-EV-004',
+                          'evidence_type': 'DATA_QUALITY_ASSERTION',
+                          'component': 'stg_crm_customers',
+                          'check_status': 'FAILED',
                           'severity': 'CRITICAL',
-                          'observed_at': '2026-10-22T10:40:00+00:00',
-                          'details': 'DEMO: Simulated payment event ingestion failure.'}],
-  'inferred_hypotheses': [{'hypothesis_id': 'DEMO-HYP-004',
-                           'candidate_root_cause': 'pipe_raw_payment_events',
-                           'dataset_name': 'raw_payment_events',
-                           'pipeline_name': 'pipe_raw_payment_events',
-                           'confidence_score': 0.86,
+                          'observed_at': '2026-10-17T02:10:00+00:00',
+                          'details': 'DEMO: Postal code null rate spiked to 28.8% after CRM schema drift.'}],
+  'inferred_hypotheses': [{'hypothesis_id': 'DEMO-HYP-003',
+                           'candidate_root_cause': 'pipe_raw_crm_export',
+                           'dataset_name': 'raw_crm_export',
+                           'pipeline_name': 'pipe_raw_crm_export',
+                           'confidence_score': 0.81,
                            'confidence_level': 'HIGH',
                            'is_confirmed': False,
                            'rank': 1,
-                           'reasoning': '[DEMO HYPOTHESIS] An ingestion failure may explain the '
-                                        'reduced payment event volume.',
-                           'score_breakdown': {'raw_score': 88,
+                           'reasoning': '[Inferred Hypothesis] Unannounced CRM schema change '
+                                        'dropped the postal_code column, causing null spike. '
+                                        'Operator verification required.',
+                           'score_breakdown': {'raw_score': 84,
                                                'max_raw_score': 100,
-                                               'confidence_score': 0.86,
+                                               'confidence_score': 0.81,
                                                'max_confidence_limit': 0.95,
-                                               'scoring_details': ['DEMO: Simulated pipeline '
-                                                                   'failure']}}],
-  'top_candidate_root_cause': 'pipe_raw_payment_events',
-  'top_confidence_score': 0.86,
-  'recommended_recovery_actions': ['[Pipeline Audit] Inspect payment ingestion execution logs.',
-                                   '[Reconciliation] Compare source event counts with target '
-                                   'records.'],
+                                               'scoring_details': ['DEMO: Schema drift detected',
+                                                                   'DEMO: Null spike observed']}}],
+  'top_candidate_root_cause': 'pipe_raw_crm_export',
+  'top_confidence_score': 0.81,
+  'recommended_recovery_actions': ['[Schema Audit] Compare current CRM feed schema with the '
+                                   'registered DDL in the data catalog.',
+                                   '[Null Analysis] Identify which records are missing postal_code '
+                                   'and trace to source extraction batch.',
+                                   '[Controlled Reprocessing] Re-ingest after schema contract is '
+                                   'restored with the CRM provider.'],
+  'data_mode': 'demo'},
+ {'case_id': 'CASE-RAW_WEB_CLICKSTREAM',
+  'title': 'Mobile Session Drop in Web Clickstream Cratered Conversion Funnel',
+  'flow_name': 'Web Clickstream & Session Conversion Funnel',
+  'root_dataset': 'raw_web_clickstream',
+  'severity': 'CRITICAL',
+  'status': 'ACTIVE_INVESTIGATION',
+  'first_observed_at': '2026-10-17T03:50:00+00:00',
+  'last_observed_at': '2026-10-17T04:10:00+00:00',
+  'silent_data_corruption': False,
+  'affected_datasets': ['raw_web_clickstream', 'stg_session_events', 'fct_conversion_funnel'],
+  'downstream_reports': ['Conversion Funnel Dashboard', 'Mobile UX Report'],
+  'associated_kpis': [{'kpi_name': 'Mobile Conversion Rate',
+                       'expected_value': 4.2,
+                       'actual_value': 1.9,
+                       'deviation_percent': -54.8,
+                       'business_impact': 'Marketing spend ROI may be significantly understated.'}],
+  'confirmed_evidence': [{'evidence_id': 'DEMO-EV-005',
+                          'evidence_type': 'DATA_QUALITY_ASSERTION',
+                          'component': 'stg_session_events',
+                          'check_status': 'FAILED',
+                          'severity': 'CRITICAL',
+                          'observed_at': '2026-10-17T04:05:00+00:00',
+                          'details': 'DEMO: Mobile session record count dropped 64% vs 7-day avg.'}],
+  'inferred_hypotheses': [{'hypothesis_id': 'DEMO-HYP-004',
+                           'candidate_root_cause': 'pipe_raw_web_clickstream',
+                           'dataset_name': 'raw_web_clickstream',
+                           'pipeline_name': 'pipe_raw_web_clickstream',
+                           'confidence_score': 0.85,
+                           'confidence_level': 'HIGH',
+                           'is_confirmed': False,
+                           'rank': 1,
+                           'reasoning': '[Inferred Hypothesis] Mobile tracker instrumentation '
+                                        'failure caused session drop. Operator verification required.',
+                           'score_breakdown': {'raw_score': 89,
+                                               'max_raw_score': 100,
+                                               'confidence_score': 0.85,
+                                               'max_confidence_limit': 0.95,
+                                               'scoring_details': ['DEMO: Session count anomaly',
+                                                                   'DEMO: Mobile-only drop pattern']}}],
+  'top_candidate_root_cause': 'pipe_raw_web_clickstream',
+  'top_confidence_score': 0.85,
+  'recommended_recovery_actions': ['[Tracker Audit] Check mobile event tracker SDK version and '
+                                   'deployment state across app versions.',
+                                   '[Session Reconciliation] Compare raw event counts from tracker '
+                                   'logs vs ingested records.',
+                                   '[Controlled Replay] Re-ingest missed mobile sessions from '
+                                   'tracker buffer after source is validated.'],
+  'data_mode': 'demo'},
+ {'case_id': 'CASE-RAW_WMS_BALANCES',
+  'title': 'Warehouse Lock Contention Inducing Supply Chain Stockout False Alarm',
+  'flow_name': 'Inventory & WMS Balance Snapshot Flow',
+  'root_dataset': 'raw_wms_balances',
+  'severity': 'HIGH',
+  'status': 'ACTIVE_INVESTIGATION',
+  'first_observed_at': '2026-10-17T06:35:00+00:00',
+  'last_observed_at': '2026-10-17T06:50:00+00:00',
+  'silent_data_corruption': False,
+  'affected_datasets': ['raw_wms_balances', 'stg_inventory_snapshots', 'dim_inventory_availability'],
+  'downstream_reports': ['Inventory Availability Dashboard', 'Supply Chain Ops Report'],
+  'associated_kpis': [{'kpi_name': 'In-Stock Availability Rate',
+                       'expected_value': 97.8,
+                       'actual_value': 84.1,
+                       'deviation_percent': -14.0,
+                       'business_impact': 'Supply chain may falsely trigger emergency restocking orders.'}],
+  'confirmed_evidence': [{'evidence_id': 'DEMO-EV-006',
+                          'evidence_type': 'PIPELINE_EXECUTION',
+                          'component': 'pipe_raw_wms_balances',
+                          'status': 'FAILED',
+                          'severity': 'HIGH',
+                          'observed_at': '2026-10-17T06:50:00+00:00',
+                          'details': 'DEMO: WMS snapshot pipeline timed out due to lock contention.'}],
+  'inferred_hypotheses': [{'hypothesis_id': 'DEMO-HYP-005',
+                           'candidate_root_cause': 'pipe_raw_wms_balances',
+                           'dataset_name': 'raw_wms_balances',
+                           'pipeline_name': 'pipe_raw_wms_balances',
+                           'confidence_score': 0.78,
+                           'confidence_level': 'HIGH',
+                           'is_confirmed': False,
+                           'rank': 1,
+                           'reasoning': '[Inferred Hypothesis] WMS lock contention caused stale '
+                                        'balance snapshot, triggering false stockout. Operator '
+                                        'verification required.',
+                           'score_breakdown': {'raw_score': 81,
+                                               'max_raw_score': 100,
+                                               'confidence_score': 0.78,
+                                               'max_confidence_limit': 0.95,
+                                               'scoring_details': ['DEMO: Pipeline timeout detected',
+                                                                   'DEMO: Stale snapshot inferred']}}],
+  'top_candidate_root_cause': 'pipe_raw_wms_balances',
+  'top_confidence_score': 0.78,
+  'recommended_recovery_actions': ['[Lock Analysis] Inspect WMS database lock contention logs '
+                                   'during the snapshot window.',
+                                   '[Snapshot Validation] Compare WMS balance snapshot with '
+                                   'physical inventory scan records.',
+                                   '[Controlled Re-snapshot] Re-run WMS balance extraction after '
+                                   'confirming lock contention is resolved.'],
   'data_mode': 'demo'}]
 
 
@@ -352,8 +408,19 @@ DEMO_INCIDENTS = [
 
 
 DEMO_LINEAGE = {
-    "status": "success",
+    "status": "ok",
     "data_mode": "demo",
+    "summary": {
+        "total_nodes": 6,
+        "total_dependencies": 5,
+        "is_acyclic": True,
+        "source_datasets": 2,
+        "transformations": 3,
+        "downstream_datasets": 1,
+        "critical_dependencies": 0,
+        "direct_critical_count": 0,
+        "silent_corruption_count": 0,
+    },
     "nodes": [
         {"id": "raw_ecommerce_orders", "label": "Raw E-Commerce Orders", "type": "source"},
         {"id": "stg_ecommerce_orders", "label": "Staging Orders", "type": "transformation"},
@@ -369,6 +436,7 @@ DEMO_LINEAGE = {
         {"source": "raw_pos_transactions", "target": "stg_pos_transactions"},
         {"source": "stg_pos_transactions", "target": "fct_daily_sales"},
     ],
+    "scenarios": [],
 }
 
 
@@ -504,6 +572,8 @@ def exasol_health() -> JSONResponse:
             content={
                 "status": "unhealthy",
                 "database": "Exasol",
+                "host": "127.0.0.1:8563",
+                "latency_ms": None,
                 "message": "Exasol is unavailable. Demo fallback is enabled for data endpoints.",
             },
         )
@@ -602,27 +672,28 @@ def list_quality_checks(
         logger.exception("Using demo quality checks because Exasol retrieval failed")
         items = DEMO_QUALITY_CHECKS[:]
 
-        if status:
+        # Helper: treat None, blank, and "ALL" (any case) as "no filter"
+        def _active(val: Optional[str]) -> bool:
+            return bool(val and val.strip() and val.strip().upper() != "ALL")
+
+        if _active(status):
+            target_status = status.strip().upper()
             items = [
                 x for x in items
-                if status.upper() in (
-                    x["status"].upper(), x["check_status"].upper()
-                )
+                if x.get("check_status", x.get("status", "")).upper() == target_status
             ]
-        if severity:
-            items = [x for x in items if x["severity"].upper() == severity.upper()]
-        if dataset:
-            items = [
-                x for x in items
-                if dataset.lower() in x["dataset_name"].lower()
-            ]
-        if search:
-            items = [
-                x for x in items
-                if search.lower() in str(x).lower()
-            ]
+        if _active(severity):
+            target_sev = severity.strip().upper()
+            items = [x for x in items if x.get("severity", "").upper() == target_sev]
+        if _active(dataset):
+            target_ds = dataset.strip().lower()
+            items = [x for x in items if target_ds in x.get("dataset_name", "").lower()]
+        if search and search.strip():
+            q = search.strip().lower()
+            items = [x for x in items if q in str(x).lower()]
         if limit is not None and limit > 0:
             items = items[:limit]
+
 
         return JSONResponse(
             status_code=200,
@@ -630,7 +701,33 @@ def list_quality_checks(
                 "status": "success",
                 "data_mode": "demo",
                 "total": len(items),
-                "quality_checks": items,
+                "total_matching": len(items),
+                "checks": [
+                    {
+                        **item,
+                        "check_status": item.get("check_status", item.get("status", "UNKNOWN")),
+                        "check_type": item.get("check_type", "GENERAL"),
+                    }
+                    for item in items
+                ],
+                "summary": {
+                    "total_matching": len(items),
+                    "passed_count": sum(1 for x in items if x.get("check_status", x.get("status", "")) == "PASSED"),
+                    "failed_count": sum(1 for x in items if x.get("check_status", x.get("status", "")) == "FAILED"),
+                    "warning_count": sum(1 for x in items if x.get("check_status", x.get("status", "")) == "WARNING"),
+                    "critical_count": sum(1 for x in items if x.get("severity", "") == "CRITICAL"),
+                    "high_count": sum(1 for x in items if x.get("severity", "") == "HIGH"),
+                },
+                "global_summary": {
+                    "total_checks": len(DEMO_QUALITY_CHECKS),
+                    "passed_checks": sum(1 for x in DEMO_QUALITY_CHECKS if x.get("check_status", x.get("status", "")) == "PASSED"),
+                    "failed_checks": sum(1 for x in DEMO_QUALITY_CHECKS if x.get("check_status", x.get("status", "")) == "FAILED"),
+                    "warning_checks": sum(1 for x in DEMO_QUALITY_CHECKS if x.get("check_status", x.get("status", "")) == "WARNING"),
+                    "critical_checks": sum(1 for x in DEMO_QUALITY_CHECKS if x.get("severity", "") == "CRITICAL"),
+                    "high_checks": sum(1 for x in DEMO_QUALITY_CHECKS if x.get("severity", "") == "HIGH"),
+                    "medium_checks": sum(1 for x in DEMO_QUALITY_CHECKS if x.get("severity", "") == "MEDIUM"),
+                    "low_checks": sum(1 for x in DEMO_QUALITY_CHECKS if x.get("severity", "") == "LOW"),
+                },
                 "message": "DEMO DATA: These checks are illustrative, not live database results.",
             },
         )
