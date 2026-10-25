@@ -78,3 +78,10 @@ Run from the project root:
    - Interactive incident investigation workbench
    - Evidence-versus-hypothesis separation view
    - Impacted KPI and recovery-action dashboard
+## Demo Video
+
+[Watch the TraceOps Demo](https://drive.google.com/file/d/1SASz2wZ4TwMLNJgy3J2Be0M6YX1tBfWW/view?usp=sharing)
+
+## Pitch Deck
+
+[View the TraceOps Pitch Deck](./TraceOps_Academic.pptx%20(1).pdf)
